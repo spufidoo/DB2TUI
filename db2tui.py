@@ -12,6 +12,14 @@ from typing import Optional
 
 # ************ VERSION 0.1 ******************
 
+# Db2 server family (set at connect time via probe queries)
+class Db2ServerKind:
+    UNKNOWN = "unknown"
+    IBM_I = "ibm_i"
+    LUW = "luw"
+    ZOS = "zos"
+
+
 # --- FORCE SAFE MODE (Prevents display glitches) ---
 os.environ["NCURSES_NO_UTF8_ACS"] = "1"
 os.environ["TEXTUAL_DRIVER"] = "linux"
@@ -52,12 +60,80 @@ class DB2Client:
         self.conn = None
         self.cursor = None
         self.last_query = ""
-        
+        self.server_kind = Db2ServerKind.UNKNOWN
+        self.server_version = ""
+
+    def _try_query(self, sql: str) -> bool:
+        """Run a read-only probe; return True if it succeeds."""
+        try:
+            self.cursor.execute(sql)
+            self.cursor.fetchall()
+            return True
+        except Exception:
+            return False
+
+    def _set_version_from_query(self, sql: str) -> None:
+        try:
+            self.cursor.execute(sql)
+            row = self.cursor.fetchone()
+            if row:
+                self.server_version = " ".join(str(x).strip() for x in row if x is not None)
+        except Exception:
+            pass
+
+    def detect_server(self) -> None:
+        """
+        Identify Db2 product at the connected server (not the client OS).
+        Order matters: IBM i is probed before LUW because IBM i can expose SYSIBMADM views too.
+        """
+        self.server_kind = Db2ServerKind.UNKNOWN
+        self.server_version = ""
+
+        if self._try_query("SELECT 1 FROM QSYS2.SYSSCHEMAS FETCH FIRST 1 ROW ONLY"):
+            self.server_kind = Db2ServerKind.IBM_I
+            self._set_version_from_query(
+                "SELECT OS_VERSION, OS_RELEASE FROM SYSIBMADM.ENV_SYS_INFO FETCH FIRST 1 ROW ONLY"
+            )
+            return
+
+        if self._try_query("SELECT 1 FROM SYSIBMADM.ENV_SYS_INFO FETCH FIRST 1 ROW ONLY"):
+            self.server_kind = Db2ServerKind.LUW
+            self._set_version_from_query(
+                "SELECT SERVICE_LEVEL, RELEASE_NUMBER FROM SYSIBMADM.ENV_INST_INFO FETCH FIRST 1 ROW ONLY"
+            )
+            if not self.server_version:
+                self._set_version_from_query(
+                    "SELECT INST_NAME, OS_NAME FROM SYSIBMADM.ENV_SYS_INFO FETCH FIRST 1 ROW ONLY"
+                )
+            return
+
+        if self._try_query("SELECT 1 FROM SYSIBM.SYSSCHEMATA FETCH FIRST 1 ROW ONLY"):
+            self.server_kind = Db2ServerKind.ZOS
+            self._set_version_from_query(
+                "SELECT VERSION FROM SYSIBM.SYSDUMMY1 FETCH FIRST 1 ROW ONLY"
+            )
+            return
+
+        if self._try_query("SELECT 1 FROM SYSCAT.SCHEMATA FETCH FIRST 1 ROW ONLY"):
+            self.server_kind = Db2ServerKind.LUW
+            self.server_version = "LUW (SYSCAT only; SYSIBMADM not accessible)"
+            return
+
+        self.server_kind = Db2ServerKind.UNKNOWN
+
     def connect(self):
         try:
-            self.conn = db.connect()
+            self.conn = db.connect(dsn="PYTHON")
             self.cursor = self.conn.cursor()
-            return True, "Connected to DB2"
+            self.detect_server()
+            label = {
+                Db2ServerKind.LUW: "Db2 LUW",
+                Db2ServerKind.IBM_I: "Db2 for IBM i",
+                Db2ServerKind.ZOS: "Db2 for z/OS",
+                Db2ServerKind.UNKNOWN: "Db2 (product unknown)",
+            }.get(self.server_kind, "Db2")
+            ver = f" — {self.server_version}" if self.server_version else ""
+            return True, f"Connected ({label}{ver})"
         except Exception as e:
             return False, str(e)
     
@@ -71,20 +147,99 @@ class DB2Client:
         except Exception as e:
             return False, str(e)
     
-    def get_tables(self, lib):
-        try:
-            self.cursor.execute(
-                "SELECT TABLE_NAME FROM QSYS2.SYSTABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
-                (lib.upper(),)
+    def get_schemas(self):
+        kind = self.server_kind
+        queries = []
+        if kind == Db2ServerKind.IBM_I:
+            queries.append("SELECT SCHEMA_NAME FROM QSYS2.SYSSCHEMAS ORDER BY SCHEMA_NAME")
+        elif kind == Db2ServerKind.LUW:
+            queries.append("SELECT SCHEMANAME FROM SYSCAT.SCHEMATA ORDER BY SCHEMANAME")
+            queries.append("SELECT NAME FROM SYSIBM.SYSSCHEMATA ORDER BY NAME")
+        elif kind == Db2ServerKind.ZOS:
+            queries.append("SELECT NAME FROM SYSIBM.SYSSCHEMATA ORDER BY NAME")
+            queries.append(
+                "SELECT DISTINCT CREATOR FROM SYSIBM.SYSTABLES ORDER BY CREATOR"
             )
-            return [r[0] for r in self.cursor.fetchall()]
-        except Exception as e:
-            return []
+        else:
+            queries.extend(
+                [
+                    "SELECT SCHEMANAME FROM SYSCAT.SCHEMATA ORDER BY SCHEMANAME",
+                    "SELECT NAME FROM SYSIBM.SYSSCHEMATA ORDER BY NAME",
+                    "SELECT SCHEMA_NAME FROM QSYS2.SYSSCHEMAS ORDER BY SCHEMA_NAME",
+                ]
+            )
+        for sql in queries:
+            try:
+                self.cursor.execute(sql)
+                return [r[0] for r in self.cursor.fetchall()]
+            except Exception:
+                continue
+        return []
+
+    def get_tables(self, schema):
+        sch = schema.upper()
+        kind = self.server_kind
+        pairs = []
+        if kind == Db2ServerKind.IBM_I:
+            pairs.append(
+                (
+                    "SELECT TABLE_NAME FROM QSYS2.SYSTABLES "
+                    "WHERE TABLE_SCHEMA = ? AND TABLE_TYPE IN ('T', 'P') ORDER BY TABLE_NAME",
+                    (sch,),
+                )
+            )
+        elif kind == Db2ServerKind.LUW:
+            pairs.append(
+                (
+                    "SELECT TABNAME FROM SYSCAT.TABLES "
+                    "WHERE TABSCHEMA = ? AND TYPE = 'T' ORDER BY TABNAME",
+                    (sch,),
+                )
+            )
+            pairs.append(
+                (
+                    "SELECT NAME FROM SYSIBM.SYSTABLES WHERE CREATOR = ? ORDER BY NAME",
+                    (sch,),
+                )
+            )
+        elif kind == Db2ServerKind.ZOS:
+            pairs.append(
+                (
+                    "SELECT NAME FROM SYSIBM.SYSTABLES WHERE CREATOR = ? ORDER BY NAME",
+                    (sch,),
+                )
+            )
+        else:
+            pairs.extend(
+                [
+                    (
+                        "SELECT TABNAME FROM SYSCAT.TABLES "
+                        "WHERE TABSCHEMA = ? AND TYPE = 'T' ORDER BY TABNAME",
+                        (sch,),
+                    ),
+                    (
+                        "SELECT NAME FROM SYSIBM.SYSTABLES WHERE CREATOR = ? ORDER BY NAME",
+                        (sch,),
+                    ),
+                    (
+                        "SELECT TABLE_NAME FROM QSYS2.SYSTABLES "
+                        "WHERE TABLE_SCHEMA = ? AND TABLE_TYPE IN ('T', 'P') ORDER BY TABLE_NAME",
+                        (sch,),
+                    ),
+                ]
+            )
+        for sql, params in pairs:
+            try:
+                self.cursor.execute(sql, params)
+                return [r[0] for r in self.cursor.fetchall()]
+            except Exception:
+                continue
+        return []
     
-    def get_table_count(self, lib, table):
+    def get_table_count(self, schema, table):
         """Get total row count for a table"""
         try:
-            sql = f"SELECT COUNT(*) FROM {lib}.{table}"
+            sql = f"SELECT COUNT(*) FROM {schema}.{table}"
             self.cursor.execute(sql)
             return self.cursor.fetchone()[0]
         except:
@@ -180,6 +335,12 @@ class DB2Client:
         return first_word in keywords
 
 
+class SchemaItem(ListItem):
+    def __init__(self, name: str):
+        self.schema_name = name
+        super().__init__(Label(name))
+
+
 class TableItem(ListItem):
     def __init__(self, name: str, row_count: int = None):
         self.table_name = name
@@ -255,7 +416,7 @@ class PaginationBar(Static):
             f"Page {self.current_page}/{self.total_pages} | "
             f"Rows {start}-{end} of {self.total_rows} | "
             f"Size: {self.page_size} | "
-            f"[n]ext [p]rev [f]irst [l]ast [s]ize"
+            f"(n)ext (p)rev (f)irst (l)ast (s)ize"
         )
 
 
@@ -287,7 +448,14 @@ class AboutScreen(ModalScreen):
 
 class LoadFileScreen(ModalScreen):
     """File loader dialog"""
-    
+
+    BINDINGS = [
+        Binding("escape", "dismiss_cancel", "Cancel", show=False, priority=True),
+    ]
+
+    def action_dismiss_cancel(self) -> None:
+        self.dismiss()
+
     def compose(self) -> ComposeResult:
         with Center():
             with Vertical(id="file-dialog"):
@@ -303,9 +471,9 @@ class LoadFileScreen(ModalScreen):
             if file_path:
                 self.dismiss(file_path)
             else:
-                self.app.pop_screen()
+                self.dismiss()
         else:
-            self.app.pop_screen()
+            self.dismiss()
     
     def on_input_submitted(self, event: Input.Submitted) -> None:
         file_path = event.value.strip()
@@ -553,12 +721,13 @@ class SqlApp(App):
         Binding("c", "clear_table", "Clear", show=False),
         Binding("ctrl+a", "show_about", "About", show=True),
         Binding("q", "quit", "Quit", show=True),
+        Binding("b", "back_to_schemas", "Schema list", show=True),
     ]
 
     def __init__(self):
         super().__init__()
         self.client = DB2Client()
-        self.current_lib = ""
+        self.current_schema = ""
         self.current_table = ""
         self.current_sql = ""
         self.current_offset = 0
@@ -566,16 +735,20 @@ class SqlApp(App):
         self.total_rows = 0
         self.loaded_sql = ""
         self.loaded_file_name = ""
+        self.sidebar_showing_schemas = True
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         
         with Container(id="top-bar"):
-            yield Input(placeholder="ENTER LIBRARY (e.g. YOURLIBRARY)", id="lib")
-        
+            yield Input(
+                placeholder="Optional: type a schema name and press Enter to open its tables",
+                id="schema",
+            )
+
         with Container(id="main"):
             with Vertical(id="sidebar"):
-                yield Label("TABLES", classes="header-text")
+                yield Label("SCHEMAS", id="sidebar-title", classes="header-text")
                 yield ListView(id="list")
             
             with Vertical(id="right-panel"):
@@ -599,7 +772,10 @@ class SqlApp(App):
         dt.zebra_stripes = True
         dt.cursor_type = "row"
         
-        self.query_one("#lib").focus()
+        if status:
+            self.load_schema_list(focus_list=True)
+        else:
+            self.query_one("#schema").focus()
 
     def on_key(self, event) -> None:
         """Log key presses only when debug mode is enabled"""
@@ -611,36 +787,86 @@ class SqlApp(App):
         """Add message to message panel"""
         self.query_one(MessagePanel).add_message(message, msg_type)
 
-    @on(Input.Submitted, "#lib")
-    def load_tables(self, event):
-        self.current_lib = event.value.strip().upper()
-        if not self.current_lib:
+    def load_schema_list(self, focus_list: bool = False) -> None:
+        """Populate sidebar with schemas from the catalog."""
+        self.sidebar_showing_schemas = True
+        self.current_schema = ""
+        self.query_one("#sidebar-title", Label).update("SCHEMAS")
+
+        if not self.client.conn:
+            self.add_message("Not connected — cannot load schemas", "error")
             return
-        
-        self.add_message(f"Loading tables from library: {self.current_lib}", "info")
-        self.query_one(StatusBar).update_status(f"Loading tables from {self.current_lib}...", "query")
-        tables = self.client.get_tables(self.current_lib)
-        
+
+        self.query_one(StatusBar).update_status("Loading schemas...", "query")
+        schemas = self.client.get_schemas()
+
         lv = self.query_one("#list")
         lv.clear()
-        
+
+        if not schemas:
+            lv.append(ListItem(Label("No schemas returned (check catalog access)")))
+            self.add_message("No schemas found", "warning")
+            self.query_one(StatusBar).update_status("No schemas found", "error")
+        else:
+            for s in schemas:
+                lv.append(SchemaItem(s))
+            self.add_message(f"Loaded {len(schemas)} schema(s)", "success")
+            self.query_one(StatusBar).update_status(
+                f"{len(schemas)} schema(s) — pick one; B: back to this list from tables", "success"
+            )
+
+        if focus_list:
+            self.query_one("#list").focus()
+
+    def load_tables_for_schema(self, schema: str, focus_list: bool = True) -> None:
+        """Replace sidebar list with tables for the given schema."""
+        schema = schema.strip().upper()
+        if not schema:
+            return
+
+        self.sidebar_showing_schemas = False
+        self.current_schema = schema
+        self.query_one("#sidebar-title", Label).update(f"TABLES — {schema}")
+
+        self.add_message(f"Loading tables from schema: {schema}", "info")
+        self.query_one(StatusBar).update_status(f"Loading tables from {schema}...", "query")
+        tables = self.client.get_tables(schema)
+
+        lv = self.query_one("#list")
+        lv.clear()
+
         if not tables:
-            lv.append(ListItem(Label(f"No tables in {self.current_lib}")))
-            self.add_message(f"No tables found in library {self.current_lib}", "warning")
-            self.query_one(StatusBar).update_status(f"No tables found in {self.current_lib}", "error")
+            lv.append(ListItem(Label(f"No tables in {schema}")))
+            self.add_message(f"No tables found in schema {schema}", "warning")
+            self.query_one(StatusBar).update_status(f"No tables found in {schema}", "error")
         else:
             for t in tables:
                 lv.append(TableItem(t))
-            
-            self.add_message(f"Loaded {len(tables)} tables from {self.current_lib}", "success")
-            self.query_one(StatusBar).update_status(f"Loaded {len(tables)} tables from {self.current_lib}", "success")
+
+            self.add_message(f"Loaded {len(tables)} table(s) from {schema}", "success")
+            self.query_one(StatusBar).update_status(
+                f"{len(tables)} table(s) in {schema} — B: back to schemas", "success"
+            )
+
+        if focus_list:
             self.query_one("#list").focus()
+
+    @on(Input.Submitted, "#schema")
+    def on_schema_input_submitted(self, event: Input.Submitted) -> None:
+        """Optional: type a schema name and press Enter (same as choosing from the list)."""
+        name = event.value.strip().upper()
+        if not name:
+            return
+        self.load_tables_for_schema(name, focus_list=True)
 
     @on(ListView.Selected, "#list")
     def on_select(self, event):
+        if isinstance(event.item, SchemaItem):
+            self.load_tables_for_schema(event.item.schema_name, focus_list=True)
+            return
         if isinstance(event.item, TableItem):
             self.current_table = event.item.table_name
-            sql = f"SELECT * FROM {self.current_lib}.{self.current_table}"
+            sql = f"SELECT * FROM {self.current_schema}.{self.current_table}"
             
             self.loaded_sql = ""
             self.loaded_file_name = ""
@@ -842,6 +1068,13 @@ class SqlApp(App):
         else:
             self.add_message("No query to refresh", "warning")
             self.query_one(StatusBar).update_status("No query to refresh", "info")
+
+    def action_back_to_schemas(self):
+        """Show catalog schema list in the sidebar (key B)."""
+        if not self.client.conn:
+            self.add_message("Not connected", "warning")
+            return
+        self.load_schema_list(focus_list=True)
 
     def action_clear_table(self):
         """Clear the results table"""
