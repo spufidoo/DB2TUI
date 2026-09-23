@@ -1,0 +1,6 @@
+{
+  "name": "DB2TUI",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "ports": [50000]
+}
