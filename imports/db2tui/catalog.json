@@ -1,0 +1,98 @@
+{
+  "schema": "portable-ai-memory-conversation-catalog",
+  "schema_version": "1.0",
+  "exported_at": "2026-11-16T16:59:10.442Z",
+  "exporter": "db2tui-export/1.0.0",
+  "source": {
+    "platform": "cursor",
+    "repoUrl": "github.com/spufidoo/DB2TUI",
+    "batch_run_dir": "/tmp/cursor/cloud-agent-transcripts/2026-11-16T16-56-31Z-695d"
+  },
+  "conversation_count": 3,
+  "conversations": [
+    {
+      "id": "bc-96220c79-3a2f-5d2b-a7e7-fe14b688bed5",
+      "title": "Explain Cloud Agent UI tabs",
+      "provider": {
+        "name": "cursor",
+        "conversation_id": "bc-96220c79-3a2f-5d2b-a7e7-fe14b688bed5",
+        "account_id": "291038673",
+        "export_format_version": "cursor-cloud-transcript-2026.11"
+      },
+      "temporal": {
+        "created_at": "2026-09-23T10:19:59.788Z",
+        "updated_at": "2026-09-23T10:20:56.267Z"
+      },
+      "message_count": 8,
+      "model": null,
+      "tags": [
+        "db2tui",
+        "cursor-cloud-agent",
+        "internal"
+      ],
+      "url": "https://cursor.com/agents/bc-96220c79-3a2f-5d2b-a7e7-fe14b688bed5",
+      "storage": {
+        "type": "file",
+        "ref": "conversations/bc-96220c79-3a2f-5d2b-a7e7-fe14b688bed5.json",
+        "format": "json"
+      },
+      "source_checksum": "sha256:7a879638c3d3a7459caa5121177531151a70b2887634aeb85d91cdb773a681e0"
+    },
+    {
+      "id": "bc-fa42541d-36f8-56e4-a83e-60b67ad11cf9",
+      "title": "Verify DB2TUI env build",
+      "provider": {
+        "name": "cursor",
+        "conversation_id": "bc-fa42541d-36f8-56e4-a83e-60b67ad11cf9",
+        "account_id": "291038673",
+        "export_format_version": "cursor-cloud-transcript-2026.11"
+      },
+      "temporal": {
+        "created_at": "2026-09-23T09:00:25.226Z",
+        "updated_at": "2026-09-23T09:02:15.587Z"
+      },
+      "message_count": 25,
+      "model": null,
+      "tags": [
+        "db2tui",
+        "cursor-cloud-agent",
+        "internal"
+      ],
+      "url": "https://cursor.com/agents/bc-fa42541d-36f8-56e4-a83e-60b67ad11cf9",
+      "storage": {
+        "type": "file",
+        "ref": "conversations/bc-fa42541d-36f8-56e4-a83e-60b67ad11cf9.json",
+        "format": "json"
+      },
+      "source_checksum": "sha256:f2183e0be5a304ad903f4825ae5de0737e4826f6fb5ce27c85d5bcda3c1d3545"
+    },
+    {
+      "id": "bc-792ba099-0333-4c88-9da2-e5b365e928bd",
+      "title": "Set up DB2TUI environment",
+      "provider": {
+        "name": "cursor",
+        "conversation_id": "bc-792ba099-0333-4c88-9da2-e5b365e928bd",
+        "account_id": "291038673",
+        "export_format_version": "cursor-cloud-transcript-2026.11"
+      },
+      "temporal": {
+        "created_at": "2026-09-23T08:33:08.198Z",
+        "updated_at": "2026-11-16T16:48:09.626Z"
+      },
+      "message_count": 271,
+      "model": "claude-opus-4-8-thinking-high",
+      "tags": [
+        "db2tui",
+        "cursor-cloud-agent",
+        "setup"
+      ],
+      "url": "https://cursor.com/agents/bc-792ba099-0333-4c88-9da2-e5b365e928bd",
+      "storage": {
+        "type": "file",
+        "ref": "conversations/bc-792ba099-0333-4c88-9da2-e5b365e928bd.json",
+        "format": "json"
+      },
+      "source_checksum": "sha256:57584d1ac718a57ba1786ff1503e4cb1cee87493057b531cdc2f68717be752d2"
+    }
+  ]
+}
